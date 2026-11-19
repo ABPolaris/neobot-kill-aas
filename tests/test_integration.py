@@ -303,7 +303,7 @@ def _registered(ctx, name):
 
 def test_plugin_identity_and_export():
     assert PLUGIN.name == "proactive"
-    assert PLUGIN.version == "1.7.1"
+    assert PLUGIN.version == "1.8.0"
     assert PLUGIN.config_model.__name__ == "ProactiveConfig"
 
 
@@ -1231,6 +1231,180 @@ def test_openid_id_is_not_mangled_by_int_conversion():
     """openid 含非数字字符时也不能被数值转换弄坏。"""
     assert MODULE._as_id("A1B2-C3D4_E5F6") == "A1B2-C3D4_E5F6"
     assert MODULE._as_id("  A1B2  ") == "A1B2"
+
+
+# ---------------------------------------------------------------------------
+# 对话空闲结束（默认关闭）
+# ---------------------------------------------------------------------------
+
+
+def test_auto_close_defaults_to_off():
+    config = MODULE.ProactiveConfig()
+    assert config.auto_close_conversation is False
+    assert config.auto_close_seconds == 300
+
+
+def test_idle_close_window_is_clamped_to_30_1800():
+    with _tmpdir() as tmp:
+        for value, expected in ((-100, 30), (0, 30), (29, 30), (30, 30), (300, 300), (1800, 1800), (5000, 1800)):
+            engine, _, _ = _build_engine(MODULE, tmp, FakeServices(), auto_close_seconds=value)
+            assert engine._idle_close_window() == expected, value
+
+
+def _idle_engine(tmp, hub, **overrides):
+    """空闲触发配置：间隔 1 分钟 + 关抖动，方便把 last_message_time 拨到很久以前。"""
+    return _build_engine(
+        MODULE,
+        tmp,
+        FakeServices(notification_hub=hub),
+        groups=[
+            _group_rule(
+                MODULE,
+                guild_id="100",
+                enable_idle_trigger=True,
+                idle_interval_minutes=1,
+                idle_enable_jitter=False,
+            )
+        ],
+        **overrides,
+    )
+
+
+def test_auto_close_off_keeps_old_history():
+    """默认关闭：行为与旧版一致，触发时仍然带上旧话题。"""
+    async def scenario():
+        with _tmpdir() as tmp:
+            hub = FakeNotificationHub()
+            engine, _, _ = _idle_engine(tmp, hub)
+            engine.record("group", "100", "旧话题A", "A")
+            state = engine._sessions["group:100"]
+            state.last_message_time = time.time() - 3600
+            await engine.tick()
+            assert len(hub.published) == 1
+            assert "旧话题A" in hub.published[0]["content"]
+
+    asyncio.run(scenario())
+
+
+def test_auto_close_on_drops_stale_history():
+    """开启后：空闲超过窗口即结束对话，触发时不再带旧话题。"""
+    async def scenario():
+        with _tmpdir() as tmp:
+            hub = FakeNotificationHub()
+            engine, _, _ = _idle_engine(tmp, hub, auto_close_conversation=True, auto_close_seconds=30)
+            engine.record("group", "100", "旧话题A", "A")
+            state = engine._sessions["group:100"]
+            state.last_message_time = time.time() - 3600
+            await engine.tick()
+            assert len(hub.published) == 1
+            content = hub.published[0]["content"]
+            assert "旧话题A" not in content
+            assert "本轮没有新消息" in content
+            assert len(state.messages) == 0
+            assert len(state.timestamps) == 0
+
+    asyncio.run(scenario())
+
+
+def test_auto_close_on_keeps_history_when_still_active():
+    """开启后：对话还在活跃窗口内（活跃度触发）就不该丢历史。"""
+    async def scenario():
+        with _tmpdir() as tmp:
+            hub = FakeNotificationHub()
+            engine, _, _ = _build_engine(
+                MODULE,
+                tmp,
+                FakeServices(notification_hub=hub),
+                groups=[
+                    _group_rule(
+                        MODULE,
+                        guild_id="100",
+                        enable_activity_trigger=True,
+                        activity_message_interval=0,
+                    )
+                ],
+                auto_close_conversation=True,
+                auto_close_seconds=30,
+            )
+            engine.record("group", "100", "刚聊的内容B", "B")
+            state = engine._sessions["group:100"]
+            now = time.time()
+            state.timestamps.clear()
+            for i in range(40):
+                state.timestamps.append(now - i * 0.2)
+            await engine.tick()
+            assert len(hub.published) == 1
+            assert "刚聊的内容B" in hub.published[0]["content"]
+
+    asyncio.run(scenario())
+
+
+def test_new_message_after_expiry_starts_fresh_conversation():
+    """超时后收到的新消息属于新的一次对话，历史池只剩它自己。"""
+    with _tmpdir() as tmp:
+        engine, _, _ = _build_engine(
+            MODULE,
+            tmp,
+            FakeServices(),
+            groups=[_group_rule(MODULE, guild_id="100", enable_idle_trigger=True)],
+            auto_close_conversation=True,
+            auto_close_seconds=30,
+        )
+        engine.record("group", "100", "旧话题C", "C")
+        state = engine._sessions["group:100"]
+        state.last_message_time = time.time() - 3600
+        engine.record("group", "100", "新话题D", "D")
+        assert len(state.messages) == 1
+        assert "新话题D" in state.messages[0]
+        assert "旧话题C" not in state.messages[0]
+
+
+def test_successful_trigger_records_bot_message_time():
+    async def scenario():
+        with _tmpdir() as tmp:
+            hub = FakeNotificationHub()
+            engine, _, _ = _idle_engine(tmp, hub)
+            engine.record("group", "100", "hi", "A")
+            state = engine._sessions["group:100"]
+            state.last_message_time = time.time() - 3600
+            await engine.tick()
+            assert len(hub.published) == 1
+            assert state.last_bot_message_time > 0
+
+    asyncio.run(scenario())
+
+
+def test_last_bot_message_time_survives_save_and_load():
+    with _tmpdir() as tmp:
+        services = FakeServices(notification_hub=FakeNotificationHub())
+        engine, _, _ = _build_engine(
+            MODULE,
+            tmp,
+            services,
+            groups=[_group_rule(MODULE, guild_id="100", enable_idle_trigger=True)],
+        )
+        engine.record("group", "100", "hi", "A")
+        state = engine._sessions["group:100"]
+        state.last_bot_message_time = time.time() - 5
+        engine.save(force=True)
+
+        engine2, _, _ = _build_engine(
+            MODULE,
+            tmp,
+            services,
+            groups=[_group_rule(MODULE, guild_id="100", enable_idle_trigger=True)],
+        )
+        assert engine2._sessions["group:100"].last_bot_message_time > 0
+
+
+def test_bot_message_time_participates_in_anchor():
+    """锚点取「最后一条消息」与「最后一次主动发言」的较晚者。"""
+    state = MODULE.SessionState(kind="group", conversation_id="1")
+    state.last_message_time = 100.0
+    state.last_bot_message_time = 0.0
+    assert MODULE.ProactiveEngine._conversation_anchor(state) == 100.0
+    state.last_bot_message_time = 200.0
+    assert MODULE.ProactiveEngine._conversation_anchor(state) == 200.0
 
 
 def _run_all() -> int:

@@ -1,6 +1,6 @@
 name = "proactive"
-version = "1.7.1"
-description = "主动发言调度（空闲 / 活跃度触发）+ 指令图片总览"
+version = "1.8.0"
+description = "主动发言调度（空闲 / 活跃度触发）"
 author = "ported from koishi-plugin-chatluna-proactive-trigger"
 dependencies = []
 priority = 0
@@ -11,8 +11,8 @@ homepage = ""
 license = "MIT"
 tags = ["chat", "proactive", "help"]
 
-# 插件本体不持有端口或后台线程之外的长生命周期资源：调度循环用 ctx.create_task，
-# 停插件时会被取消，因此支持热重载；配置改动走 config.toml，重载即生效。
+# 插件本体不持有端口或后台线程之外的长生命周期资源：调度循环用 asyncio.create_task，
+# 停插件时在 on_shutdown 里取消，因此支持热重载；配置改动走 config.toml，重载即生效。
 hot_reload = true
 config_hot_reload = true
 
@@ -24,6 +24,13 @@ enabled = true
 
 # 调度器检查触发条件的频率（秒），不是主动发言的间隔
 tick_seconds = 20
+
+# 对话空闲后自动结束（默认关闭）：开启后，距最后一条消息（含主动发言本身）超过下面时长
+# 仍无人接话，本次对话即结束；之后触发主动发言不再带上旧话题。关闭时行为与旧版一致。
+auto_close_conversation = false
+
+# 对话空闲多少秒后视为结束（30~1800 秒，即 30 秒 ~ 30 分钟）；仅在上面的开关开启时生效
+auto_close_seconds = 300
 
 # 默认群聊模板适用的群号/会话 ID 列表（需存在 guild_id = "default" 的规则）
 apply_default_group_configs = []

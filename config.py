@@ -189,7 +189,7 @@ class PrivateRule(BaseModel):
 
 
 class ProactiveConfig(BaseModel):
-    """主动发言 + 指令图片中心的全部配置。"""
+    """主动发言的全部配置。"""
 
     # --- 总开关 ---
     enabled: bool = Field(
@@ -227,6 +227,25 @@ class ProactiveConfig(BaseModel):
         ge=5,
         le=600,
         description="调度器检查触发条件的频率（秒），不是主动发言的间隔；调小更及时，调大更省资源",
+    )
+
+    # --- 对话空闲结束（默认关闭）---
+    auto_close_conversation: bool = Field(
+        default=False,
+        description=(
+            "对话空闲后自动结束（默认关闭）：开启后，距最后一条消息（含主动发言本身）超过下面设定的时长仍无人接话，"
+            "本次对话即视为结束；此后触发主动发言不会带上之前的话题，等于重新开场。"
+            "关闭时行为与旧版完全一致"
+        ),
+    )
+    auto_close_seconds: int = Field(
+        default=300,
+        ge=30,
+        le=1800,
+        description=(
+            "对话空闲多少秒后视为结束（30~1800 秒，即 30 秒 ~ 30 分钟）；"
+            "仅在上面「对话空闲后自动结束」开启时生效"
+        ),
     )
 
     # --- 失败处理 ---

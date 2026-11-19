@@ -54,8 +54,8 @@ PERM_SUPER_ADMIN = 2
 
 plugin = Plugin(
     "proactive",
-    version="1.7.1",
-    description="主动发言调度（空闲 / 活跃度触发）+ 指令图片总览",
+    version="1.8.0",
+    description="主动发言调度（空闲 / 活跃度触发）",
     usage="提供 /proactive 系列主动发言管理指令；全部指令用本体的 /help 查看",
     config=ProactiveConfig,
 )
@@ -200,6 +200,8 @@ class SessionState:
     messages: deque[str] = field(default_factory=lambda: deque(maxlen=1000))
     last_message_time: float = 0.0
     last_trigger_time: float = 0.0
+    #: 上一次主动发言成功发出的时间（「对话空闲结束」的计时锚点之一）
+    last_bot_message_time: float = 0.0
     current_threshold: float = 0.85
     messages_since_trigger: int = 0
     failures: int = 0
@@ -434,6 +436,8 @@ class ProactiveEngine:
         elif aliases != state.aliases:
             # 映射可能是后来才用 /linkqq 建立的
             state.aliases = aliases
+        # 空闲超时：这条消息属于新的一次对话，先把上一次结束掉
+        self._close_idle_conversation(state, now)
         state.timestamps.append(now)
         state.last_message_time = now
         state.messages_since_trigger += 1
@@ -458,6 +462,50 @@ class ProactiveEngine:
             state.failures >= max(1, int(self._config.max_retry_attempts))
             and now < state.failure_cooldown_until
         )
+
+    # -- 对话空闲结束（默认关闭）--------------------------------------------
+
+    def _idle_close_window(self) -> int:
+        """对话空闲结束的窗口（秒），强制收在 30~1800。"""
+        try:
+            value = int(self._config.auto_close_seconds)
+        except (TypeError, ValueError):
+            value = 300
+        return max(30, min(1800, value))
+
+    @staticmethod
+    def _conversation_anchor(state: SessionState) -> float:
+        """本次对话的最后一条消息时间：用户消息与主动发言取较晚者。"""
+        return max(state.last_message_time or 0.0, state.last_bot_message_time or 0.0)
+
+    def _close_idle_conversation(self, state: SessionState, now: float) -> bool:
+        """开关开启且对话已空闲超时 → 结束本次对话（清空历史池）。
+
+        结束之后 ``{history}`` 为空，下一次触发不会再顺着旧话题往下说。
+        开关关闭（默认）时恒返回 False、不改任何状态，行为与旧版完全一致。
+        """
+        if not bool(self._config.auto_close_conversation):
+            return False
+        anchor = self._conversation_anchor(state)
+        if not anchor:
+            return False
+        window = self._idle_close_window()
+        if now - anchor < window:
+            return False
+        if not state.messages and not state.timestamps and state.messages_since_trigger == 0:
+            # 已经清空过，避免每个 tick 重复记日志
+            return False
+        state.messages.clear()
+        state.timestamps.clear()
+        state.messages_since_trigger = 0
+        state.last_bot_message_time = 0.0
+        self._dirty = True
+        self._log(
+            "info",
+            f"{state.key} 已空闲 {int(now - anchor)}s（阈值 {window}s），结束本次对话；"
+            f"下次触发不读取旧话题",
+        )
+        return True
 
     async def tick(self) -> None:
         if not self._runtime_enabled or not self._sessions:
@@ -486,6 +534,9 @@ class ProactiveEngine:
         if self._failure_cooldown_active(state, now):
             return
 
+        # 空闲超时先结束旧对话，这样下面构造的提示词不会带上旧话题
+        self._close_idle_conversation(state, now)
+
         trigger = await self._pick_trigger(state, rule, now, moment)
         if trigger is None:
             return
@@ -493,6 +544,7 @@ class ProactiveEngine:
         ok = await self._deliver(state, reason, prompt)
         if ok:
             state.last_trigger_time = now
+            state.last_bot_message_time = now
             state.failures = 0
             state.failure_cooldown_until = 0.0
             state.messages.clear()
@@ -674,7 +726,9 @@ class ProactiveEngine:
         )
         ok = await self._deliver(state, "manual", prompt)
         if ok:
-            state.last_trigger_time = time.time()
+            now = time.time()
+            state.last_trigger_time = now
+            state.last_bot_message_time = now
             state.messages.clear()
             state.timestamps.clear()
             state.messages_since_trigger = 0
@@ -700,6 +754,7 @@ class ProactiveEngine:
                     messages=deque(item.get("messages", []), maxlen=1000),
                     last_message_time=float(item.get("last_message_time", 0.0)),
                     last_trigger_time=float(item.get("last_trigger_time", 0.0)),
+                    last_bot_message_time=float(item.get("last_bot_message_time", 0.0)),
                     current_threshold=float(item.get("current_threshold", 0.85)),
                     messages_since_trigger=int(item.get("messages_since_trigger", 0)),
                 )
@@ -721,6 +776,7 @@ class ProactiveEngine:
                     "messages": list(s.messages),
                     "last_message_time": s.last_message_time,
                     "last_trigger_time": s.last_trigger_time,
+                    "last_bot_message_time": s.last_bot_message_time,
                     "current_threshold": s.current_threshold,
                     "messages_since_trigger": s.messages_since_trigger,
                 }
