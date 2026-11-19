@@ -20,6 +20,7 @@
 | **1.7.0** | — | a9 把官方通道的会话 ID 从 13 位合成号改成 openid 字符串 |
 | **1.7.1** | — | 设置页提示重写；`history_message_limit` 真正支持到 1000；失败重试改为「失败 N 次后冷却」 |
 | **1.8.0** | — | 触发时会顺着上次没聊完的旧话题继续说；新增「对话空闲结束」开关（默认关闭） |
+| **1.8.1** | — | 1.8.0 把「对话空闲结束」做成了全局开关，但它应该**每条规则各一份** |
 
 ---
 
@@ -492,6 +493,41 @@ openid 含非数字字符时不被数值转换弄坏。
 
 **新增 9 条用例**：默认关闭、窗口夹取边界、关闭时保留旧话题、开启时丢弃旧话题、
 活跃对话不误杀、超时后新消息开新会话、成功触发记录发言时间、该字段持久化、锚点取值、默认值。
+
+---
+
+## 1.8.1
+
+### 问题：「对话空闲结束」被做成了全局开关
+
+**现象**：1.8.0 里 `auto_close_conversation` / `auto_close_seconds` 挂在 `ProactiveConfig` 上，
+面板只有一个总开关。但实际使用时，每个群/每个人的需求不一样——
+有的群希望冷场就重新开场，有的群还希望接着上文说，全局一个值满足不了。
+
+**修复**：把这两个字段从 `ProactiveConfig` 挪进 **`GroupRule` 与 `PrivateRule`**，
+每条规则各一份，在面板的「规则列表」里逐条可见可配。
+
+```diff
+-# ProactiveConfig（全局）
+-auto_close_conversation: bool = False
+-auto_close_seconds: int = 300
++# GroupRule / PrivateRule（每条规则）
++auto_close_conversation: bool = False
++auto_close_seconds: int = 300   # ge=30 le=1800
+```
+
+**代码变化**：
+
+- `_idle_close_window()` 与 `_close_idle_conversation()` 都改成接收 `rule` 参数；
+- `record()` / `_evaluate()` 本来就算好了 `rule`，直接传进去；
+- `force_trigger()` 也补上了同一个判定——手动试触发和真实触发看到的历史才一致。
+
+**升级注意**：1.8.0 的全局字段已移除。如果你在 1.8.0 上开过这个总开关，
+升级后需要到**每条规则**里重新打开（pydantic 会忽略旧的全字段，不会报错，
+但也不会生效）。仓库里没有预设规则，所以对现有配置的实际影响是「功能回到关闭」。
+
+**新增用例**：改为按规则构造，并补了一条 `test_auto_close_is_per_rule_not_global` ——
+同一引擎里 A 群开启、B 群关闭，一次 tick 后 A 群历史被清空、B 群保留。
 
 ---
 

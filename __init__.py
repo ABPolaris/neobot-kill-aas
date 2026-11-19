@@ -54,7 +54,7 @@ PERM_SUPER_ADMIN = 2
 
 plugin = Plugin(
     "proactive",
-    version="1.8.0",
+    version="1.8.1",
     description="主动发言调度（空闲 / 活跃度触发）",
     usage="提供 /proactive 系列主动发言管理指令；全部指令用本体的 /help 查看",
     config=ProactiveConfig,
@@ -437,7 +437,7 @@ class ProactiveEngine:
             # 映射可能是后来才用 /linkqq 建立的
             state.aliases = aliases
         # 空闲超时：这条消息属于新的一次对话，先把上一次结束掉
-        self._close_idle_conversation(state, now)
+        self._close_idle_conversation(state, rule, now)
         state.timestamps.append(now)
         state.last_message_time = now
         state.messages_since_trigger += 1
@@ -465,10 +465,10 @@ class ProactiveEngine:
 
     # -- 对话空闲结束（默认关闭）--------------------------------------------
 
-    def _idle_close_window(self) -> int:
-        """对话空闲结束的窗口（秒），强制收在 30~1800。"""
+    def _idle_close_window(self, rule: GroupRule | PrivateRule) -> int:
+        """本条规则的对话空闲结束窗口（秒），强制收在 30~1800。"""
         try:
-            value = int(self._config.auto_close_seconds)
+            value = int(getattr(rule, "auto_close_seconds", 300))
         except (TypeError, ValueError):
             value = 300
         return max(30, min(1800, value))
@@ -478,18 +478,20 @@ class ProactiveEngine:
         """本次对话的最后一条消息时间：用户消息与主动发言取较晚者。"""
         return max(state.last_message_time or 0.0, state.last_bot_message_time or 0.0)
 
-    def _close_idle_conversation(self, state: SessionState, now: float) -> bool:
-        """开关开启且对话已空闲超时 → 结束本次对话（清空历史池）。
+    def _close_idle_conversation(
+        self, state: SessionState, rule: GroupRule | PrivateRule, now: float
+    ) -> bool:
+        """本条规则开启且对话已空闲超时 → 结束本次对话（清空历史池）。
 
         结束之后 ``{history}`` 为空，下一次触发不会再顺着旧话题往下说。
-        开关关闭（默认）时恒返回 False、不改任何状态，行为与旧版完全一致。
+        开关按**每条规则**独立生效；本条关闭（默认）时恒返回 False、不改任何状态。
         """
-        if not bool(self._config.auto_close_conversation):
+        if not bool(getattr(rule, "auto_close_conversation", False)):
             return False
         anchor = self._conversation_anchor(state)
         if not anchor:
             return False
-        window = self._idle_close_window()
+        window = self._idle_close_window(rule)
         if now - anchor < window:
             return False
         if not state.messages and not state.timestamps and state.messages_since_trigger == 0:
@@ -502,7 +504,7 @@ class ProactiveEngine:
         self._dirty = True
         self._log(
             "info",
-            f"{state.key} 已空闲 {int(now - anchor)}s（阈值 {window}s），结束本次对话；"
+            f"{state.key} 已空闲 {int(now - anchor)}s（本条规则阈值 {window}s），结束本次对话；"
             f"下次触发不读取旧话题",
         )
         return True
@@ -535,7 +537,7 @@ class ProactiveEngine:
             return
 
         # 空闲超时先结束旧对话，这样下面构造的提示词不会带上旧话题
-        self._close_idle_conversation(state, now)
+        self._close_idle_conversation(state, rule, now)
 
         trigger = await self._pick_trigger(state, rule, now, moment)
         if trigger is None:
@@ -716,6 +718,8 @@ class ProactiveEngine:
                 aliases=aliases,
             )
             self._sessions[state.key] = state
+        # 手动试触发也走同一套空闲判定，避免「测试结果和真实触发不一致」
+        self._close_idle_conversation(state, rule, time.time())
         moment = datetime.now()
         prompt = self._build_prompt(
             getattr(rule, "idle_prompt_template", engine.DEFAULT_IDLE_PROMPT),

@@ -88,6 +88,16 @@ def normalize_id_list(value: Any) -> tuple[list[str], int]:
     return out, dropped
 
 
+_AUTO_CLOSE_SWITCH_HELP = (
+    "对话空闲后自动结束（默认关闭）：开启后，距最后一条消息（含主动发言本身）超过下面设定的时长"
+    "仍无人接话，本次对话即视为结束；此后触发主动发言不会带上之前的话题，等于重新开场。"
+    "关闭时行为与旧版一致。**每条规则单独生效**"
+)
+_AUTO_CLOSE_SECONDS_HELP = (
+    "对话空闲多少秒后视为结束（30~1800 秒，即 30 秒 ~ 30 分钟）；仅在本条规则的「自动结束后」开关开启时生效"
+)
+
+
 class GroupRule(BaseModel):
     """单个群聊的主动发言规则。"""
 
@@ -145,6 +155,10 @@ class GroupRule(BaseModel):
         description=_WORK_HOURS_HELP,
         json_schema_extra={"placeholder": "如 8-19,22-2"},
     )
+    auto_close_conversation: bool = Field(default=False, description=_AUTO_CLOSE_SWITCH_HELP)
+    auto_close_seconds: int = Field(
+        default=300, ge=30, le=1800, description=_AUTO_CLOSE_SECONDS_HELP
+    )
     activity_prompt_template: str = Field(
         default=DEFAULT_ACTIVITY_PROMPT, description="活跃度触发提示词模板。" + _PROMPT_HELP
     )
@@ -182,6 +196,10 @@ class PrivateRule(BaseModel):
         default="",
         description=_WORK_HOURS_HELP,
         json_schema_extra={"placeholder": "如 8-19,22-2"},
+    )
+    auto_close_conversation: bool = Field(default=False, description=_AUTO_CLOSE_SWITCH_HELP)
+    auto_close_seconds: int = Field(
+        default=300, ge=30, le=1800, description=_AUTO_CLOSE_SECONDS_HELP
     )
     idle_prompt_template: str = Field(
         default=DEFAULT_IDLE_PROMPT, description="空闲触发提示词模板。" + _PROMPT_HELP
@@ -227,25 +245,6 @@ class ProactiveConfig(BaseModel):
         ge=5,
         le=600,
         description="调度器检查触发条件的频率（秒），不是主动发言的间隔；调小更及时，调大更省资源",
-    )
-
-    # --- 对话空闲结束（默认关闭）---
-    auto_close_conversation: bool = Field(
-        default=False,
-        description=(
-            "对话空闲后自动结束（默认关闭）：开启后，距最后一条消息（含主动发言本身）超过下面设定的时长仍无人接话，"
-            "本次对话即视为结束；此后触发主动发言不会带上之前的话题，等于重新开场。"
-            "关闭时行为与旧版完全一致"
-        ),
-    )
-    auto_close_seconds: int = Field(
-        default=300,
-        ge=30,
-        le=1800,
-        description=(
-            "对话空闲多少秒后视为结束（30~1800 秒，即 30 秒 ~ 30 分钟）；"
-            "仅在上面「对话空闲后自动结束」开启时生效"
-        ),
     )
 
     # --- 失败处理 ---

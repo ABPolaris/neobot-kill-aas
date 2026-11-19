@@ -1,5 +1,5 @@
 name = "proactive"
-version = "1.8.0"
+version = "1.8.1"
 description = "主动发言调度（空闲 / 活跃度触发）"
 author = "ported from koishi-plugin-chatluna-proactive-trigger"
 dependencies = []
@@ -25,13 +25,6 @@ enabled = true
 # 调度器检查触发条件的频率（秒），不是主动发言的间隔
 tick_seconds = 20
 
-# 对话空闲后自动结束（默认关闭）：开启后，距最后一条消息（含主动发言本身）超过下面时长
-# 仍无人接话，本次对话即结束；之后触发主动发言不再带上旧话题。关闭时行为与旧版一致。
-auto_close_conversation = false
-
-# 对话空闲多少秒后视为结束（30~1800 秒，即 30 秒 ~ 30 分钟）；仅在上面的开关开启时生效
-auto_close_seconds = 300
-
 # 默认群聊模板适用的群号/会话 ID 列表（需存在 guild_id = "default" 的规则）
 apply_default_group_configs = []
 
@@ -39,6 +32,8 @@ apply_default_group_configs = []
 apply_default_private_configs = []
 
 # 群聊规则列表：在面板「配置」里逐条添加
+# 「对话空闲后自动结束」（auto_close_conversation / auto_close_seconds）是**每条规则各自**的字段，
+# 不在全局配置里；添加规则时会在该规则的小表单里看到。
 groups = []
 
 # 私聊规则列表：私聊只支持空闲触发
